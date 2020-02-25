@@ -376,6 +376,8 @@ class Worker(object):
         """
         try:
             os.kill(self.horse_pid, sig)
+            os.waitpid(self.horse_pid, 0)
+            self.log.info('Killed horse pid %s', self.horse_pid)
         except OSError as e:
             if e.errno == errno.ESRCH:
                 # "No such process" is fine with us
@@ -688,7 +690,7 @@ class Worker(object):
                 self.heartbeat(self.job_monitoring_interval + 5)
 
                 # Kill the job from this side if something is really wrong (interpreter lock/etc).
-                if (utcnow() - job.started_at).total_seconds() > (job.timeout + 1):
+                if job.timeout != -1 and (utcnow() - job.started_at).total_seconds() > (job.timeout + 1):
                     self.kill_horse()
                     break
 
@@ -754,7 +756,7 @@ class Worker(object):
             os._exit(1)
 
         # os._exit() is the way to exit from childs after a fork(), in
-        # constrast to the regular sys.exit()
+        # contrast to the regular sys.exit()
         os._exit(0)
 
     def setup_work_horse_signals(self):
