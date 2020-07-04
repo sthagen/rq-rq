@@ -39,6 +39,11 @@ JobStatus = enum(
 UNEVALUATED = object()
 
 
+def truncate_long_string(data, maxlen=75):
+    """ Truncates strings longer than maxlen
+    """
+    return (data[:maxlen] + '...') if len(data) > maxlen else data
+	
 def cancel_job(job_id, connection=None):
     """Cancels the job with the given job ID, preventing execution.  Discards
     any job info (i.e. it can't be requeued later).
@@ -122,6 +127,13 @@ class Job(object):
         if depends_on is not None:
             job._dependency_ids = [depends_on.id if isinstance(depends_on, Job) else depends_on]
         return job
+
+    def get_position(self):
+        from .queue import Queue
+        if self.origin:
+            q = Queue(name=self.origin, connection=self.connection)
+            return q.get_job_position(self._id)
+        return None
 
     def get_status(self, refresh=True):
         if refresh:
@@ -577,7 +589,7 @@ class Job(object):
 
     def requeue(self):
         """Requeues job."""
-        self.failed_job_registry.requeue(self)
+        return self.failed_job_registry.requeue(self)
 
     def delete(self, pipeline=None, remove_from_queue=True,
                delete_dependents=False):
@@ -672,9 +684,9 @@ class Job(object):
         if self.func_name is None:
             return None
 
-        arg_list = [as_text(repr(arg)) for arg in self.args]
+        arg_list = [as_text(truncate_long_string(repr(arg))) for arg in self.args]
 
-        kwargs = ['{0}={1}'.format(k, as_text(repr(v))) for k, v in self.kwargs.items()]
+        kwargs = ['{0}={1}'.format(k, as_text(truncate_long_string(repr(v)))) for k, v in self.kwargs.items()]
         # Sort here because python 3.3 & 3.4 makes different call_string
         arg_list += sorted(kwargs)
         args = ', '.join(arg_list)
