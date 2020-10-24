@@ -13,8 +13,7 @@ from .registry import ScheduledJobRegistry
 from .utils import current_timestamp, enum
 from .logutils import setup_loghandlers
 
-from redis import Redis
-
+from redis import Redis, SSLConnection
 
 SCHEDULER_KEY_TEMPLATE = 'rq:scheduler:%s'
 SCHEDULER_LOCKING_KEY_TEMPLATE = 'rq:scheduler-lock:%s'
@@ -29,7 +28,6 @@ setup_loghandlers(
 
 
 class RQScheduler(object):
-
     # STARTED: scheduler has been started but sleeping
     # WORKING: scheduler is in the midst of scheduling jobs
     # STOPPED: scheduler is in stopped condition
@@ -47,6 +45,10 @@ class RQScheduler(object):
         self._scheduled_job_registries = []
         self.lock_acquisition_time = None
         self._connection_kwargs = connection.connection_pool.connection_kwargs
+        self._connection_class = connection.__class__  # client
+        connection_class = connection.connection_pool.connection_class
+        if issubclass(connection_class, SSLConnection):
+            self._connection_kwargs['ssl'] = True
         self._connection = None
         self.interval = interval
         self._stop_requested = False
@@ -57,8 +59,8 @@ class RQScheduler(object):
     def connection(self):
         if self._connection:
             return self._connection
-        self._connection = Redis(**self._connection_kwargs)
-        return Redis(**self._connection_kwargs)
+        self._connection = self._connection_class(**self._connection_kwargs)
+        return self._connection
 
     @property
     def acquired_locks(self):
@@ -83,7 +85,7 @@ class RQScheduler(object):
         pid = os.getpid()
         logger.info("Trying to acquire locks for %s", ", ".join(self._queue_names))
         for name in self._queue_names:
-            if self.connection.set(self.get_locking_key(name), pid, nx=True, ex=5):
+            if self.connection.set(self.get_locking_key(name), pid, nx=True, ex=60):
                 successful_locks.add(name)
 
         # Always reset _scheduled_job_registries when acquiring locks
@@ -134,11 +136,11 @@ class RQScheduler(object):
             queue = Queue(registry.name, connection=self.connection)
 
             with self.connection.pipeline() as pipeline:
-                # This should be done in bulk
-                for job_id in job_ids:
-                    job = Job.fetch(job_id, connection=self.connection)
-                    queue.enqueue_job(job, pipeline=pipeline)
-                registry.remove_jobs(timestamp)
+                jobs = Job.fetch_many(job_ids, connection=self.connection)
+                for job in jobs:
+                    if job is not None:
+                        queue.enqueue_job(job, pipeline=pipeline)
+                        registry.remove(job, pipeline=pipeline)
                 pipeline.execute()
         self._status = self.Status.STARTED
 
@@ -168,7 +170,7 @@ class RQScheduler(object):
 
     def stop(self):
         logger.info("Scheduler stopping, releasing locks for %s...",
-                     ','.join(self._queue_names))
+                    ','.join(self._queue_names))
         keys = [self.get_locking_key(name) for name in self._queue_names]
         self.connection.delete(*keys)
         self._status = self.Status.STOPPED
@@ -200,7 +202,7 @@ class RQScheduler(object):
 
 def run(scheduler):
     logger.info("Scheduler for %s started with PID %s",
-                 ','.join(scheduler._queue_names), os.getpid())
+                ','.join(scheduler._queue_names), os.getpid())
     try:
         scheduler.work()
     except:  # noqa
