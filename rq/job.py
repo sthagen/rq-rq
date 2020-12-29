@@ -45,7 +45,8 @@ def truncate_long_string(data, maxlen=75):
     """ Truncates strings longer than maxlen
     """
     return (data[:maxlen] + '...') if len(data) > maxlen else data
-	
+
+
 def cancel_job(job_id, connection=None):
     """Cancels the job with the given job ID, preventing execution.  Discards
     any job info (i.e. it can't be requeued later).
@@ -189,7 +190,7 @@ class Job(object):
             return None
         if hasattr(self, '_dependency'):
             return self._dependency
-        job = self.fetch(self._dependency_ids[0], connection=self.connection)
+        job = self.fetch(self._dependency_ids[0], connection=self.connection, serializer=self.serializer)
         self._dependency = job
         return job
 
@@ -300,7 +301,7 @@ class Job(object):
         return job
 
     @classmethod
-    def fetch_many(cls, job_ids, connection):
+    def fetch_many(cls, job_ids, connection, serializer=None):
         """
         Bulk version of Job.fetch
 
@@ -315,7 +316,7 @@ class Job(object):
         jobs = []
         for i, job_id in enumerate(job_ids):
             if results[i]:
-                job = cls(job_id, connection=connection)
+                job = cls(job_id, connection=connection, serializer=serializer)
                 job.restore(results[i])
                 jobs.append(job)
             else:
@@ -343,6 +344,7 @@ class Job(object):
         self.result_ttl = None
         self.failure_ttl = None
         self.ttl = None
+        self.worker_name = None
         self._status = None
         self._dependency_ids = []        
         self.meta = {}
@@ -351,6 +353,7 @@ class Job(object):
         # retry_intervals is a list of int e.g [60, 120, 240]
         self.retry_intervals = None
         self.redis_server_version = None
+        self.last_heartbeat = None
 
     def __repr__(self):  # noqa  # pragma: no cover
         return '{0}({1!r}, enqueued_at={2!r})'.format(self.__class__.__name__,
@@ -383,6 +386,11 @@ class Job(object):
         if not isinstance(value, string_types):
             raise TypeError('id must be a string, not {0}'.format(type(value)))
         self._id = value
+
+    def heartbeat(self, heartbeat, pipeline=None):
+        self.last_heartbeat = heartbeat
+        connection = pipeline if pipeline is not None else self.connection
+        connection.hset(self.key, 'last_heartbeat', utcformat(self.last_heartbeat))
 
     id = property(get_id, set_id)
 
@@ -473,10 +481,12 @@ class Job(object):
 
         self.created_at = str_to_date(obj.get('created_at'))
         self.origin = as_text(obj.get('origin'))
+        self.worker_name = obj.get('worker_name').decode() if obj.get('worker_name') else None
         self.description = as_text(obj.get('description'))
         self.enqueued_at = str_to_date(obj.get('enqueued_at'))
         self.started_at = str_to_date(obj.get('started_at'))
         self.ended_at = str_to_date(obj.get('ended_at'))
+        self.last_heartbeat = str_to_date(obj.get('last_heartbeat'))
         result = obj.get('result')
         if result:
             try:
@@ -493,7 +503,7 @@ class Job(object):
 
         self.ttl = int(obj.get('ttl')) if obj.get('ttl') else None
         self.meta = self.serializer.loads(obj.get('meta')) if obj.get('meta') else {}
-        
+
         self.retries_left = int(obj.get('retries_left')) if obj.get('retries_left') else None
         if obj.get('retry_intervals'):
             self.retry_intervals = json.loads(obj.get('retry_intervals').decode())
@@ -530,8 +540,10 @@ class Job(object):
             'data': zlib.compress(self.data),
             'started_at': utcformat(self.started_at) if self.started_at else '',
             'ended_at': utcformat(self.ended_at) if self.ended_at else '',
+            'last_heartbeat': utcformat(self.last_heartbeat) if self.last_heartbeat else '',
+            'worker_name': self.worker_name or ''
         }
-        
+
         if self.retries_left is not None:
             obj['retries_left'] = self.retries_left
         if self.retry_intervals is not None:
@@ -546,7 +558,7 @@ class Job(object):
         if self._result is not None:
             try:
                 obj['result'] = self.serializer.dumps(self._result)
-            except Exception as e:
+            except:  # noqa
                 obj['result'] = "Unserializable return value"
         if self.exc_info is not None:
             obj['exc_info'] = zlib.compress(str(self.exc_info).encode('utf-8'))
@@ -667,7 +679,7 @@ class Job(object):
         connection = pipeline if pipeline is not None else self.connection
         for dependent_id in self.dependent_ids:
             try:
-                job = Job.fetch(dependent_id, connection=self.connection)
+                job = Job.fetch(dependent_id, connection=self.connection, serializer=self.serializer)
                 job.delete(pipeline=pipeline,
                            remove_from_queue=False)
             except NoSuchJobError:
@@ -685,6 +697,23 @@ class Job(object):
         finally:
             assert self is _job_stack.pop()
         return self._result
+
+    def prepare_for_execution(self, worker_name, pipeline):
+        """Set job metadata before execution begins"""
+        self.worker_name = worker_name
+        self.last_heartbeat = utcnow()
+        self.started_at = self.last_heartbeat
+        self._status = JobStatus.STARTED
+        mapping = {
+            'last_heartbeat': utcformat(self.last_heartbeat),
+            'status': self._status,
+            'started_at': utcformat(self.started_at),
+            'worker_name': worker_name
+        }
+        if self.get_redis_server_version() >= StrictVersion("4.0.0"):
+            pipeline.hset(self.key, mapping=mapping)
+        else:
+            pipeline.hmset(self.key, mapping)
 
     def _execute(self):
         return self.func(*self.args, **self.kwargs)

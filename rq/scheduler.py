@@ -3,28 +3,20 @@ import os
 import signal
 import time
 import traceback
-
 from datetime import datetime
 from multiprocessing import Process
 
+from redis import Redis, SSLConnection
+
+from .defaults import DEFAULT_LOGGING_DATE_FORMAT, DEFAULT_LOGGING_FORMAT
 from .job import Job
+from .logutils import setup_loghandlers
 from .queue import Queue
 from .registry import ScheduledJobRegistry
 from .utils import current_timestamp, enum
-from .logutils import setup_loghandlers
-
-from redis import Redis, SSLConnection
 
 SCHEDULER_KEY_TEMPLATE = 'rq:scheduler:%s'
 SCHEDULER_LOCKING_KEY_TEMPLATE = 'rq:scheduler-lock:%s'
-
-logger = logging.getLogger(__name__)
-setup_loghandlers(
-    level=logging.INFO,
-    name="rq.scheduler",
-    log_format="%(asctime)s: %(message)s",
-    date_format="%H:%M:%S"
-)
 
 
 class RQScheduler(object):
@@ -39,21 +31,36 @@ class RQScheduler(object):
         STOPPED='stopped'
     )
 
-    def __init__(self, queues, connection, interval=1):
+    def __init__(self, queues, connection, interval=1, logging_level=logging.INFO,
+                 date_format=DEFAULT_LOGGING_DATE_FORMAT,
+                 log_format=DEFAULT_LOGGING_FORMAT):
         self._queue_names = set(parse_names(queues))
         self._acquired_locks = set()
         self._scheduled_job_registries = []
         self.lock_acquisition_time = None
-        self._connection_kwargs = connection.connection_pool.connection_kwargs
+        # Copy the connection kwargs before mutating them in order to not change the arguments
+        # used by the current connection pool to create new connections
+        self._connection_kwargs = connection.connection_pool.connection_kwargs.copy()
+        # Redis does not accept parser_class argument which is sometimes present
+        # on connection_pool kwargs, for example when hiredis is used
+        self._connection_kwargs.pop('parser_class', None)
         self._connection_class = connection.__class__  # client
         connection_class = connection.connection_pool.connection_class
         if issubclass(connection_class, SSLConnection):
             self._connection_kwargs['ssl'] = True
+
         self._connection = None
         self.interval = interval
         self._stop_requested = False
         self._status = self.Status.STOPPED
         self._process = None
+        self.log = logging.getLogger(__name__)
+        setup_loghandlers(
+            level=logging_level,
+            name=__name__,
+            log_format=log_format,
+            date_format=date_format,
+        )
 
     @property
     def connection(self):
@@ -83,7 +90,7 @@ class RQScheduler(object):
         """Returns names of queue it successfully acquires lock on"""
         successful_locks = set()
         pid = os.getpid()
-        logger.info("Trying to acquire locks for %s", ", ".join(self._queue_names))
+        self.log.info("Trying to acquire locks for %s", ", ".join(self._queue_names))
         for name in self._queue_names:
             if self.connection.set(self.get_locking_key(name), pid, nx=True, ex=60):
                 successful_locks.add(name)
@@ -157,7 +164,8 @@ class RQScheduler(object):
 
     def heartbeat(self):
         """Updates the TTL on scheduler keys and the locks"""
-        logger.debug("Scheduler sending heartbeat to %s", ", ".join(self.acquired_locks))
+        self.log.debug("Scheduler sending heartbeat to %s",
+                       ", ".join(self.acquired_locks))
         if len(self._queue_names) > 1:
             with self.connection.pipeline() as pipeline:
                 for name in self._queue_names:
@@ -169,11 +177,16 @@ class RQScheduler(object):
             self.connection.expire(key, self.interval + 5)
 
     def stop(self):
-        logger.info("Scheduler stopping, releasing locks for %s...",
-                    ','.join(self._queue_names))
+        self.log.info("Scheduler stopping, releasing locks for %s...",
+                      ','.join(self._queue_names))
+        self.release_locks()
+        self._status = self.Status.STOPPED
+
+    def release_locks(self):
+        """Release acquired locks"""
         keys = [self.get_locking_key(name) for name in self._queue_names]
         self.connection.delete(*keys)
-        self._status = self.Status.STOPPED
+        self._acquired_locks = set()
 
     def start(self):
         self._status = self.Status.STARTED
@@ -201,17 +214,17 @@ class RQScheduler(object):
 
 
 def run(scheduler):
-    logger.info("Scheduler for %s started with PID %s",
-                ','.join(scheduler._queue_names), os.getpid())
+    scheduler.log.info("Scheduler for %s started with PID %s",
+                       ','.join(scheduler._queue_names), os.getpid())
     try:
         scheduler.work()
     except:  # noqa
-        logger.error(
+        scheduler.log.error(
             'Scheduler [PID %s] raised an exception.\n%s',
             os.getpid(), traceback.format_exc()
         )
         raise
-    logger.info("Scheduler with PID %s has stopped", os.getpid())
+    scheduler.log.info("Scheduler with PID %s has stopped", os.getpid())
 
 
 def parse_names(queues_or_names):
