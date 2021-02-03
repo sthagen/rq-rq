@@ -70,6 +70,9 @@ In addition to `--burst`, `rq worker` also accepts these arguments:
 * `--disable-job-desc-logging`: Turn off job description logging.
 * `--max-jobs`: Maximum number of jobs to execute.
 
+_New in version 1.8.0._
+* `--serializer`: Path to serializer object (e.g "rq.serializers.DefaultSerializer" or "rq.serializers.JSONSerializer")
+
 ## Inside the worker
 
 ### The Worker Lifecycle
@@ -183,8 +186,6 @@ Aside from `worker.name`, worker also have the following properties:
 * `failed_job_count` - number of failed jobs processed
 * `total_working_time` - amount of time spent executing jobs, in seconds
 
-_New in version 0.10.0._
-
 If you only want to know the number of workers for monitoring purposes,
 `Worker.count()` is much more performant.
 
@@ -205,31 +206,30 @@ workers = Worker.all(queue=queue)
 ## Worker with Custom Serializer
 
 When creating a worker, you can pass in a custom serializer that will be implicitly passed to the queue.
-Serializers used should have at least `loads` and `dumps` method.
+Serializers used should have at least `loads` and `dumps` method. An example of creating a custom serializer 
+class can be found in serializers.py (rq.serializers.JSONSerializer).
 The default serializer used is `pickle`
 
 ```python
-import json
 from rq import Worker
+from rq.serialzers import JSONSerializer
 
-job = Worker('foo', serializer=json)
+job = Worker('foo', serializer=JSONSerializer)
 ```
 
 or when creating from a queue
 
 ```python
-import json
 from rq import Queue, Worker
+from rq.serialzers import JSONSerializer
 
-w = Worker(Queue('foo'), serializer=json)
+w = Queue('foo', serializer=JSONSerializer)
 ```
 
 Queues will now use custom serializer
 
 
 ### Worker Statistics
-
-_New in version 0.9.0._
 
 If you want to check the utilization of your queues, `Worker` instances
 store a few useful information:
