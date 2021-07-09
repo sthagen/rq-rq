@@ -5,6 +5,7 @@ from __future__ import (absolute_import, division, print_function,
 import sys
 import importlib
 import time
+import os
 from functools import partial
 
 import click
@@ -48,12 +49,21 @@ def get_redis_from_config(settings, connection_class=Redis):
         sn = Sentinel(instances, socket_timeout=socket_timeout, password=password, db=db)
         return sn.master_for(master_name)
 
+    ssl = settings.get('REDIS_SSL', False)
+    if isinstance(ssl, str):
+        if ssl.lower() in ['y', 'yes', 't', 'true']:
+            ssl = True
+        elif ssl.lower() in ['n', 'no', 'f', 'false', '']:
+            ssl = False
+        else:
+            raise ValueError('REDIS_SSL is a boolean and must be "True" or "False".')
+
     kwargs = {
         'host': settings.get('REDIS_HOST', 'localhost'),
         'port': settings.get('REDIS_PORT', 6379),
         'db': settings.get('REDIS_DB', 0),
         'password': settings.get('REDIS_PASSWORD', None),
-        'ssl': settings.get('REDIS_SSL', False),
+        'ssl': ssl,
         'ssl_ca_certs': settings.get('REDIS_SSL_CA_CERTS', None),
     }
 
@@ -131,7 +141,7 @@ def show_workers(queues, raw, by_queue, queue_class, worker_class):
 
         for worker in workers:
             queue_names = ', '.join(worker.queue_names())
-            name = '%s (%s %s)' % (worker.name, worker.hostname, worker.pid)
+            name = '%s (%s %s %s)' % (worker.name, worker.hostname, worker.ip_address, worker.pid)
             if not raw:
                 click.echo('%s: %s %s' % (name, state_symbol(worker.get_state()), queue_names))
             else:
@@ -198,7 +208,7 @@ def setup_loghandlers_from_args(verbose, quiet, date_format, log_format):
     setup_loghandlers(level, date_format=date_format, log_format=log_format)
 
 
-class CliConfig(object):
+class CliConfig:
     """A helper class to be used with click commands, to handle shared options"""
     def __init__(self, url=None, config=None, worker_class=DEFAULT_WORKER_CLASS,
                  job_class=DEFAULT_JOB_CLASS, queue_class=DEFAULT_QUEUE_CLASS,
@@ -235,8 +245,11 @@ class CliConfig(object):
         if self._connection is None:
             if self.url:
                 self._connection = self.connection_class.from_url(self.url)
-            else:
+            elif self.config:
                 settings = read_config_file(self.config) if self.config else {}
                 self._connection = get_redis_from_config(settings,
+                                                         self.connection_class)
+            else:
+                self._connection = get_redis_from_config(os.environ,
                                                          self.connection_class)
         return self._connection

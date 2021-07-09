@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
 
 import json
 import time
@@ -11,8 +9,8 @@ from datetime import datetime, timedelta
 from redis import WatchError
 
 from rq.compat import as_text
-from rq.exceptions import NoSuchJobError
-from rq.job import Job, JobStatus, cancel_job, get_current_job, Retry
+from rq.exceptions import DeserializationError, NoSuchJobError
+from rq.job import Job, JobStatus, cancel_job, get_current_job
 from rq.queue import Queue
 from rq.registry import (DeferredJobRegistry, FailedJobRegistry,
                          FinishedJobRegistry, StartedJobRegistry,
@@ -55,13 +53,13 @@ class TestJob(RQTestCase):
         self.assertIsNone(job.result)
         self.assertIsNone(job.exc_info)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DeserializationError):
             job.func
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DeserializationError):
             job.instance
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DeserializationError):
             job.args
-        with self.assertRaises(ValueError):
+        with self.assertRaises(DeserializationError):
             job.kwargs
 
     def test_create_param_errors(self):
@@ -212,28 +210,17 @@ class TestJob(RQTestCase):
 
         # ... and no other keys are stored
         self.assertEqual(
-            sorted(self.testconn.hkeys(job.key)),
-            [b'created_at', b'data', b'description', b'ended_at', b'last_heartbeat', b'started_at', b'worker_name'])
+            set(self.testconn.hkeys(job.key)),
+            {b'created_at', b'data', b'description', b'ended_at', b'last_heartbeat', b'started_at',
+             b'worker_name', b'success_callback_name', b'failure_callback_name'}
+        )
 
         self.assertEqual(job.last_heartbeat, None)
         self.assertEqual(job.last_heartbeat, None)
 
         ts = utcnow()
-        job.heartbeat(ts)
+        job.heartbeat(ts, 0)
         self.assertEqual(job.last_heartbeat, ts)
-
-    def test_persistence_of_retry_data(self):
-        """Retry related data is stored and restored properly"""
-        job = Job.create(func=fixtures.some_calculation)
-        job.retries_left = 3
-        job.retry_intervals = [1, 2, 3]
-        job.save()
-
-        job.retries_left = None
-        job.retry_intervals = None
-        job.refresh()
-        self.assertEqual(job.retries_left, 3)
-        self.assertEqual(job.retry_intervals, [1, 2, 3])
 
     def test_persistence_of_parent_job(self):
         """Storing jobs with parent job, either instance or key."""
@@ -610,7 +597,6 @@ class TestJob(RQTestCase):
 
     def test_job_delete_removes_itself_from_registries(self):
         """job.delete() should remove itself from job registries"""
-        connection = self.testconn
         job = Job.create(func=fixtures.say_hello, status=JobStatus.FAILED,
                          connection=self.testconn, origin='default')
         job.save()
@@ -772,6 +758,14 @@ class TestJob(RQTestCase):
         self.assertIsNotNone(job.get_call_string())
         job.perform()
 
+    def test_create_job_from_static_method(self):
+        """test creating jobs with static method"""
+        queue = Queue(connection=self.testconn)
+
+        job = queue.enqueue(fixtures.ClassWithAStaticMethod.static_method)
+        self.assertIsNotNone(job.get_call_string())
+        job.perform()
+
     def test_create_job_with_ttl_should_have_ttl_after_enqueued(self):
         """test creating jobs with ttl and checks if get_jobs returns it properly [issue502]"""
         queue = Queue(connection=self.testconn)
@@ -828,7 +822,6 @@ class TestJob(RQTestCase):
         self.assertListEqual(dependencies, [dependency_job])
 
     def test_fetch_dependencies_returns_empty_if_not_dependent_job(self):
-        queue = Queue(connection=self.testconn)
         dependent_job = Job.create(func=fixtures.say_hello)
 
         dependent_job.register_dependency()
@@ -893,8 +886,6 @@ class TestJob(RQTestCase):
         self.assertFalse(dependencies_finished)
 
     def test_dependencies_finished_returns_true_if_no_dependencies(self):
-        queue = Queue(connection=self.testconn)
-
         dependent_job = Job.create(func=fixtures.say_hello)
         dependent_job.register_dependency()
 
@@ -938,8 +929,6 @@ class TestJob(RQTestCase):
         dependent_job = Job.create(func=fixtures.say_hello)
         dependent_job._dependency_ids = [job.id for job in dependency_jobs]
         dependent_job.register_dependency()
-
-        now = utcnow()
 
         dependencies_finished = dependent_job.dependencies_are_met()
 
@@ -1059,48 +1048,3 @@ class TestJob(RQTestCase):
         self.assertEqual(queue.count, 0)
         self.assertTrue(all(job.is_finished for job in [job_slow_1, job_slow_2, job_A, job_B]))
         self.assertEqual(jobs_completed, ["slow_1:w1", "B:w1", "slow_2:w2", "A"])
-
-    def test_retry(self):
-        """Retry parses `max` and `interval` correctly"""
-        retry = Retry(max=1)
-        self.assertEqual(retry.max, 1)
-        self.assertEqual(retry.intervals, [0])
-        self.assertRaises(ValueError, Retry, max=0)
-
-        retry = Retry(max=2, interval=5)
-        self.assertEqual(retry.max, 2)
-        self.assertEqual(retry.intervals, [5])
-
-        retry = Retry(max=3, interval=[5, 10])
-        self.assertEqual(retry.max, 3)
-        self.assertEqual(retry.intervals, [5, 10])
-
-        # interval can't be negative
-        self.assertRaises(ValueError, Retry, max=1, interval=-5)
-        self.assertRaises(ValueError, Retry, max=1, interval=[1, -5])
-    
-    def test_get_retry_interval(self):
-        """get_retry_interval() returns the right retry interval"""
-        job = Job.create(func=fixtures.say_hello)
-
-        # Handle case where self.retry_intervals is None
-        job.retries_left = 2
-        self.assertEqual(job.get_retry_interval(), 0)
-
-        # Handle the most common case
-        job.retry_intervals = [1, 2]
-        self.assertEqual(job.get_retry_interval(), 1)
-        job.retries_left = 1
-        self.assertEqual(job.get_retry_interval(), 2)
-        
-        # Handle cases where number of retries > length of interval
-        job.retries_left = 4
-        job.retry_intervals = [1, 2, 3]
-        self.assertEqual(job.get_retry_interval(), 1)
-        job.retries_left = 3
-        self.assertEqual(job.get_retry_interval(), 1)
-        job.retries_left = 2
-        self.assertEqual(job.get_retry_interval(), 2)
-        job.retries_left = 1
-        self.assertEqual(job.get_retry_interval(), 3)
-        

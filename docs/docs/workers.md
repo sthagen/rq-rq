@@ -290,14 +290,13 @@ SENTRY_DSN = 'sync+http://public:secret@example.com/1'
 
 The example above shows all the options that are currently supported.
 
-_Note: The_ `QUEUES` _and_ `REDIS_PASSWORD` _settings are new since 0.3.3._
-
 To specify which module to read settings from, use the `-c` option:
 
 ```console
 $ rq worker -c settings
 ```
 
+Alternatively, you can also pass in these options via environment variables.
 
 ## Custom Worker Classes
 
@@ -308,12 +307,28 @@ more common requests so far are:
 2. Using a job execution model that does not require `os.fork`.
 3. The ability to use different concurrency models such as
    `multiprocessing` or `gevent`.
+4. Using a custom strategy for dequeuing jobs from different queues. 
+   See [link](#Round-Robin-and-Random-strategies-for-dequeuing-jobs-from-queues).
 
 You can use the `-w` option to specify a different worker class to use:
 
 ```console
 $ rq worker -w 'path.to.GeventWorker'
 ```
+
+
+## Round Robin and Random strategies for dequeuing jobs from queues
+
+In certain circumstances it can be useful that a when a worker is listening to multiple queues, 
+say `q1`,`q2`,`q3`, the jobs are dequeued using a Round Robin strategy. That is, the 1st
+dequeued job is taken from `q1`, the 2nd from `q2`, the 3rd from `q3`, the 4th
+from `q1`, the 5th from `q2` and so on. The custom worker class `rq.worker.RoundRobinWorker`
+implements this strategy. 
+
+In some other circumstances, when a worker is listening to multiple queues, it can be useful
+to pull jobs from the different queues randomly. The custom class `rq.worker.RandomWorker`
+implements this strategy. In fact, whenever a job is pulled from any queue, the list of queues is
+shuffled, so that no queue has more priority than the other ones.
 
 
 ## Custom Job and Queue Classes
