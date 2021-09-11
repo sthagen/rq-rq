@@ -814,7 +814,7 @@ class Worker:
                 with self.connection.pipeline() as pipeline:
                     self.heartbeat(self.job_monitoring_interval + 60, pipeline=pipeline)
                     ttl = self.get_heartbeat_ttl(job)
-                    job.heartbeat(utcnow(), ttl, pipeline=pipeline)
+                    job.heartbeat(utcnow(), ttl, pipeline=pipeline, xx=True)
                     pipeline.execute()
 
             except OSError as e:
@@ -932,7 +932,8 @@ class Worker:
                 started_job_registry = StartedJobRegistry(
                     job.origin,
                     self.connection,
-                    job_class=self.job_class
+                    job_class=self.job_class,
+                    serializer=self.serializer
                 )
             job.worker_name = None
 
@@ -953,7 +954,7 @@ class Worker:
 
             if not self.disable_default_exception_handler and not retry:
                 failed_job_registry = FailedJobRegistry(job.origin, job.connection,
-                                                        job_class=self.job_class)
+                                                        job_class=self.job_class, serializer=job.serializer)
                 failed_job_registry.add(job, ttl=job.failure_ttl,
                                         exc_string=exc_string, pipeline=pipeline)
 
@@ -993,6 +994,7 @@ class Worker:
 
                     result_ttl = job.get_result_ttl(self.default_result_ttl)
                     if result_ttl != 0:
+                        self.log.debug('Setting job %s status to finished', job.id)
                         job.set_status(JobStatus.FINISHED, pipeline=pipeline)
                         job.worker_name = None
                         # Don't clobber the user's meta dictionary!
@@ -1003,9 +1005,11 @@ class Worker:
 
                     job.cleanup(result_ttl, pipeline=pipeline,
                                 remove_from_queue=False)
+                    self.log.debug('Removing job %s from StartedJobRegistry', job.id)
                     started_job_registry.remove(job, pipeline=pipeline)
 
                     pipeline.execute()
+                    self.log.debug('Finished handling successful execution of job %s', job.id)
                     break
                 except redis.exceptions.WatchError:
                     continue
