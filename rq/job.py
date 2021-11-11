@@ -11,7 +11,6 @@ import zlib
 import asyncio
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from distutils.version import StrictVersion
 from enum import Enum
 from functools import partial
 from uuid import uuid4
@@ -20,7 +19,7 @@ from redis import WatchError
 
 from rq.compat import as_text, decode_redis_hash, string_types
 from .connections import resolve_connection
-from .exceptions import DeserializationError, NoSuchJobError
+from .exceptions import DeserializationError, InvalidJobOperation, NoSuchJobError
 from .local import LocalStack
 from .serializers import resolve_serializer
 from .utils import (get_version, import_attribute, parse_timeout, str_to_date,
@@ -661,7 +660,7 @@ class Job:
 
         mapping = self.to_dict(include_meta=include_meta)
 
-        if self.get_redis_server_version() >= StrictVersion("4.0.0"):
+        if self.get_redis_server_version() >= (4, 0, 0):
             connection.hset(key, mapping=mapping)
         else:
             connection.hmset(key, mapping)
@@ -690,6 +689,8 @@ class Job:
         Same pipelining behavior as Queue.enqueue_dependents on whether or not a pipeline is passed in.
         """
 
+        if self.is_canceled:
+            raise InvalidJobOperation("Cannot cancel already canceled job: {}".format(self.get_id()))
         from .registry import CanceledJobRegistry
         from .queue import Queue
         pipe = pipeline or self.connection.pipeline()
@@ -706,7 +707,10 @@ class Job:
                     if pipeline is None:
                         pipe.watch(self.dependents_key)
                     q.enqueue_dependents(self, pipeline=pipeline)
-                q.remove(self, pipeline=pipe)
+                self._remove_from_registries(
+                    pipeline=pipe,
+                    remove_from_queue=True
+                )
 
                 self.set_status(JobStatus.CANCELED, pipeline=pipe)
 
@@ -733,13 +737,7 @@ class Job:
         """Requeues job."""
         return self.failed_job_registry.requeue(self)
 
-    def delete(self, pipeline=None, remove_from_queue=True,
-               delete_dependents=False):
-        """Cancels the job and deletes the job hash from Redis. Jobs depending
-        on this job can optionally be deleted as well."""
-
-        connection = pipeline if pipeline is not None else self.connection
-
+    def _remove_from_registries(self, pipeline=None, remove_from_queue=True):
         if remove_from_queue:
             from .queue import Queue
             q = Queue(name=self.origin, connection=self.connection, serializer=self.serializer)
@@ -787,6 +785,15 @@ class Job:
                                            serializer=self.serializer)
             registry.remove(self, pipeline=pipeline)
 
+    def delete(self, pipeline=None, remove_from_queue=True,
+               delete_dependents=False):
+        """Cancels the job and deletes the job hash from Redis. Jobs depending
+        on this job can optionally be deleted as well."""
+
+        connection = pipeline if pipeline is not None else self.connection
+
+        self._remove_from_registries(pipeline=pipeline, remove_from_queue=True)
+
         if delete_dependents:
             self.delete_dependents(pipeline=pipeline)
 
@@ -828,7 +835,7 @@ class Job:
             'started_at': utcformat(self.started_at),
             'worker_name': worker_name
         }
-        if self.get_redis_server_version() >= StrictVersion("4.0.0"):
+        if self.get_redis_server_version() >= (4, 0, 0):
             pipeline.hset(self.key, mapping=mapping)
         else:
             pipeline.hmset(self.key, mapping)
@@ -836,7 +843,7 @@ class Job:
     def _execute(self):
         result = self.func(*self.args, **self.kwargs)
         if asyncio.iscoroutine(result):
-            loop = asyncio.get_event_loop()
+            loop = asyncio.new_event_loop()
             coro_result = loop.run_until_complete(result)
             return coro_result
         return result
