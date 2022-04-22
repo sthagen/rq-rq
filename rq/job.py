@@ -485,7 +485,8 @@ class Job:
         connection = pipeline if pipeline is not None else self.connection
 
         if watch and self._dependency_ids:
-            connection.watch(*self._dependency_ids)
+            connection.watch(*[self.key_for(dependency_id)
+                               for dependency_id in self._dependency_ids])
 
         jobs = [job
                 for job in self.fetch_many(self._dependency_ids, connection=self.connection, serializer=self.serializer)
@@ -792,7 +793,7 @@ class Job:
 
         connection = pipeline if pipeline is not None else self.connection
 
-        self._remove_from_registries(pipeline=pipeline, remove_from_queue=True)
+        self._remove_from_registries(pipeline=pipeline, remove_from_queue=remove_from_queue)
 
         if delete_dependents:
             self.delete_dependents(pipeline=pipeline)
@@ -970,7 +971,8 @@ class Job:
         connection = pipeline if pipeline is not None else self.connection
 
         if pipeline is not None:
-            connection.watch(*self.dependency_ids)
+            connection.watch(*[self.key_for(dependency_id)
+                               for dependency_id in self._dependency_ids])
 
         dependencies_ids = {_id.decode()
                             for _id in connection.smembers(self.dependencies_key)}
