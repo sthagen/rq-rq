@@ -158,8 +158,9 @@ class Job:
         failure_ttl: Optional[int] = None,
         serializer=None,
         *,
-        on_success: Optional[Union['Callback', Callable[..., Any]]] = None,
-        on_failure: Optional[Union['Callback', Callable[..., Any]]] = None,
+        on_success: Optional[Union['Callback', Callable[..., Any]]] = None,  # Callable is deprecated
+        on_failure: Optional[Union['Callback', Callable[..., Any]]] = None,  # Callable is deprecated
+        on_stopped: Optional[Union['Callback', Callable[..., Any]]] = None,  # Callable is deprecated
     ) -> 'Job':
         """Creates a new Job instance for the given function, arguments, and
         keyword arguments.
@@ -192,17 +193,20 @@ class Job:
                 Defaults to None.
             serializer (Optional[str], optional): The serializer class path to use. Should be a string with the import
                 path for the serializer to use. eg. `mymodule.myfile.MySerializer` Defaults to None.
-            on_success (Optional[Callable[..., Any]], optional): A callback function, should be a callable to run
-                when/if the Job finishes sucessfully. Defaults to None.
-            on_failure (Optional[Callable[..., Any]], optional): A callback function, should be a callable to run
-                when/if the Job fails. Defaults to None.
+            on_success (Optional[Union['Callback', Callable[..., Any]]], optional): A callback to run when/if the Job
+                finishes sucessfully. Defaults to None. Passing a callable is deprecated.
+            on_failure (Optional[Union['Callback', Callable[..., Any]]], optional): A callback to run when/if the Job
+                fails. Defaults to None. Passing a callable is deprecated.
+            on_stopped (Optional[Union['Callback', Callable[..., Any]]], optional): A callback to run when/if the Job
+                is stopped. Defaults to None. Passing a callable is deprecated.
 
         Raises:
             TypeError: If `args` is not a tuple/list
             TypeError: If `kwargs` is not a dict
             TypeError: If the `func` is something other than a string or a Callable reference
-            ValueError: If `on_failure` is not a function
-            ValueError: If `on_success` is not a function
+            ValueError: If `on_failure` is not a Callback or function or string
+            ValueError: If `on_success` is not a Callback or function or string
+            ValueError: If `on_stopped` is not a Callback or function or string
 
         Returns:
             Job: A job instance.
@@ -244,7 +248,8 @@ class Job:
         if on_success:
             if not isinstance(on_success, Callback):
                 warnings.warn(
-                    'Passing a `Callable` `on_success` is deprecated, pass `Callback` instead', DeprecationWarning
+                    'Passing a string or function for `on_success` is deprecated, pass `Callback` instead',
+                    DeprecationWarning,
                 )
                 on_success = Callback(on_success)  # backward compatibility
             job._success_callback_name = on_success.name
@@ -253,11 +258,22 @@ class Job:
         if on_failure:
             if not isinstance(on_failure, Callback):
                 warnings.warn(
-                    'Passing a `Callable` `on_failure` is deprecated, pass `Callback` instead', DeprecationWarning
+                    'Passing a string or function for `on_failure` is deprecated, pass `Callback` instead',
+                    DeprecationWarning,
                 )
                 on_failure = Callback(on_failure)  # backward compatibility
             job._failure_callback_name = on_failure.name
             job._failure_callback_timeout = on_failure.timeout
+
+        if on_stopped:
+            if not isinstance(on_stopped, Callback):
+                warnings.warn(
+                    'Passing a string or function for `on_stopped` is deprecated, pass `Callback` instead',
+                    DeprecationWarning,
+                )
+                on_stopped = Callback(on_stopped)  # backward compatibility
+            job._stopped_callback_name = on_stopped.name
+            job._stopped_callback_timeout = on_stopped.timeout
 
         # Extra meta data
         job.description = description or job.get_call_string()
@@ -442,6 +458,23 @@ class Job:
 
         return self._failure_callback_timeout
 
+    @property
+    def stopped_callback(self):
+        if self._stopped_callback is UNEVALUATED:
+            if self._stopped_callback_name:
+                self._stopped_callback = import_attribute(self._stopped_callback_name)
+            else:
+                self._stopped_callback = None
+
+        return self._stopped_callback
+
+    @property
+    def stopped_callback_timeout(self) -> int:
+        if self._stopped_callback_timeout is None:
+            return CALLBACK_TIMEOUT
+
+        return self._stopped_callback_timeout
+
     def _deserialize_data(self):
         """Deserializes the Job `data` into a tuple.
         This includes the `_func_name`, `_instance`, `_args` and `_kwargs`
@@ -607,6 +640,8 @@ class Job:
         self._success_callback = UNEVALUATED
         self._failure_callback_name = None
         self._failure_callback = UNEVALUATED
+        self._stopped_callback_name = None
+        self._stopped_callback = UNEVALUATED
         self.description: Optional[str] = None
         self.origin: str = ''
         self.enqueued_at: Optional[datetime] = None
@@ -617,6 +652,7 @@ class Job:
         self.timeout: Optional[float] = None
         self._success_callback_timeout: Optional[int] = None
         self._failure_callback_timeout: Optional[int] = None
+        self._stopped_callback_timeout: Optional[int] = None
         self.result_ttl: Optional[int] = None
         self.failure_ttl: Optional[int] = None
         self.ttl: Optional[int] = None
@@ -913,6 +949,12 @@ class Job:
         if 'failure_callback_timeout' in obj:
             self._failure_callback_timeout = int(obj.get('failure_callback_timeout'))
 
+        if obj.get('stopped_callback_name'):
+            self._stopped_callback_name = obj.get('stopped_callback_name').decode()
+
+        if 'stopped_callback_timeout' in obj:
+            self._stopped_callback_timeout = int(obj.get('stopped_callback_timeout'))
+
         dep_ids = obj.get('dependency_ids')
         dep_id = obj.get('dependency_id')  # for backwards compatibility
         self._dependency_ids = json.loads(dep_ids.decode()) if dep_ids else [dep_id.decode()] if dep_id else []
@@ -967,6 +1009,7 @@ class Job:
             'data': zlib.compress(self.data),
             'success_callback_name': self._success_callback_name if self._success_callback_name else '',
             'failure_callback_name': self._failure_callback_name if self._failure_callback_name else '',
+            'stopped_callback_name': self._stopped_callback_name if self._stopped_callback_name else '',
             'started_at': utcformat(self.started_at) if self.started_at else '',
             'ended_at': utcformat(self.ended_at) if self.ended_at else '',
             'last_heartbeat': utcformat(self.last_heartbeat) if self.last_heartbeat else '',
@@ -997,6 +1040,8 @@ class Job:
             obj['success_callback_timeout'] = self._success_callback_timeout
         if self._failure_callback_timeout is not None:
             obj['failure_callback_timeout'] = self._failure_callback_timeout
+        if self._stopped_callback_timeout is not None:
+            obj['stopped_callback_timeout'] = self._stopped_callback_timeout
         if self.result_ttl is not None:
             obj['result_ttl'] = self.result_ttl
         if self.failure_ttl is not None:
@@ -1386,6 +1431,16 @@ class Job:
             logger.exception(f'Job {self.id}: error while executing failure callback')
             raise
 
+    def execute_stopped_callback(self, death_penalty_class: Type[BaseDeathPenalty]):
+        """Executes stopped_callback with possible timeout"""
+        logger.debug('Running stopped callbacks for %s', self.id)
+        try:
+            with death_penalty_class(self.stopped_callback_timeout, JobTimeoutException, job_id=self.id):
+                self.stopped_callback(self, self.connection)
+        except Exception:  # noqa
+            logger.exception(f'Job {self.id}: error while executing stopped callback')
+            raise
+
     def _handle_success(self, result_ttl: int, pipeline: 'Pipeline'):
         """Saves and cleanup job after successful execution"""
         # self.log.debug('Setting job %s status to finished', job.id)
@@ -1588,13 +1643,15 @@ class Retry:
 
 
 class Callback:
-    def __init__(self, func: Callable[..., Any], timeout: Optional[Any] = None):
-        if not inspect.isfunction(func) and not inspect.isbuiltin(func):
-            raise ValueError('Callback func must be a function')
+    def __init__(self, func: Union[str, Callable[..., Any]], timeout: Optional[Any] = None):
+        if not isinstance(func, str) and not inspect.isfunction(func) and not inspect.isbuiltin(func):
+            raise ValueError('Callback `func` must be a string or function')
 
         self.func = func
         self.timeout = parse_timeout(timeout) if timeout else CALLBACK_TIMEOUT
 
     @property
     def name(self) -> str:
+        if isinstance(self.func, str):
+            return self.func
         return '{0}.{1}'.format(self.func.__module__, self.func.__qualname__)

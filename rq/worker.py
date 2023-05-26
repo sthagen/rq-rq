@@ -1040,12 +1040,11 @@ class Worker(BaseWorker):
             version,
             python_version,
         ) = data
-        queues = as_text(queues)
-        self.hostname = as_text(hostname)
-        self.ip_address = as_text(ip_address)
+        self.hostname = as_text(hostname) if hostname else None
+        self.ip_address = as_text(ip_address) if ip_address else None
         self.pid = int(pid) if pid else None
-        self.version = as_text(version)
-        self.python_version = as_text(python_version)
+        self.version = as_text(version) if version else None
+        self.python_version = as_text(python_version) if python_version else None
         self._state = as_text(state or '?')
         self._job_id = job_id or None
         if last_heartbeat:
@@ -1066,6 +1065,7 @@ class Worker(BaseWorker):
             self.current_job_working_time = float(as_text(current_job_working_time))
 
         if queues:
+            queues = as_text(queues)
             self.queues = [
                 self.queue_class(
                     queue, connection=self.connection, job_class=self.job_class, serializer=self.serializer
@@ -1191,6 +1191,8 @@ class Worker(BaseWorker):
         elif self._stopped_job_id == job.id:
             # Work-horse killed deliberately
             self.log.warning('Job stopped by user, moving job to FailedJobRegistry')
+            if job.stopped_callback:
+                job.execute_stopped_callback(self.death_penalty_class)
             self.handle_job_failure(job, queue=queue, exc_string='Job stopped by user, work-horse terminated.')
         elif job_status not in [JobStatus.FINISHED, JobStatus.FAILED]:
             if not job.ended_at:

@@ -22,7 +22,7 @@ from .connections import resolve_connection
 from .defaults import DEFAULT_RESULT_TTL
 from .dependency import Dependency
 from .exceptions import DequeueTimeout, NoSuchJobError
-from .job import Job, JobStatus
+from .job import Callback, Job, JobStatus
 from .logutils import blue, green
 from .serializers import resolve_serializer
 from .types import FunctionReferenceType, JobDependencyType
@@ -50,6 +50,7 @@ class EnqueueData(
             "retry",
             "on_success",
             "on_failure",
+            "on_stopped",
         ],
     )
 ):
@@ -514,8 +515,9 @@ class Queue:
         status: JobStatus = JobStatus.QUEUED,
         retry: Optional['Retry'] = None,
         *,
-        on_success: Optional[Callable] = None,
-        on_failure: Optional[Callable] = None,
+        on_success: Optional[Union[Callback, Callable]] = None,
+        on_failure: Optional[Union[Callback, Callable]] = None,
+        on_stopped: Optional[Union[Callback, Callable]] = None,
     ) -> Job:
         """Creates a job based on parameters given
 
@@ -533,8 +535,13 @@ class Queue:
             meta (Optional[Dict], optional): Job metadata. Defaults to None.
             status (JobStatus, optional): Job status. Defaults to JobStatus.QUEUED.
             retry (Optional[Retry], optional): The Retry Object. Defaults to None.
-            on_success (Optional[Callable], optional): On success callable. Defaults to None.
-            on_failure (Optional[Callable], optional): On failure callable. Defaults to None.
+            on_success (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on success. Defaults to
+                None. Callable is deprecated.
+            on_failure (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on failure. Defaults to
+                None. Callable is deprecated.
+            on_stopped (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on stopped. Defaults to
+                None. Callable is deprecated.
+            pipeline (Optional[Pipeline], optional): The Redis Pipeline. Defaults to None.
 
         Raises:
             ValueError: If the timeout is 0
@@ -575,6 +582,7 @@ class Queue:
             serializer=self.serializer,
             on_success=on_success,
             on_failure=on_failure,
+            on_stopped=on_stopped,
         )
 
         if retry:
@@ -655,8 +663,9 @@ class Queue:
         at_front: bool = False,
         meta: Optional[Dict] = None,
         retry: Optional['Retry'] = None,
-        on_success: Optional[Callable[..., Any]] = None,
-        on_failure: Optional[Callable[..., Any]] = None,
+        on_success: Optional[Union[Callback, Callable[..., Any]]] = None,
+        on_failure: Optional[Union[Callback, Callable[..., Any]]] = None,
+        on_stopped: Optional[Union[Callback, Callable[..., Any]]] = None,
         pipeline: Optional['Pipeline'] = None,
     ) -> Job:
         """Creates a job to represent the delayed function call and enqueues it.
@@ -679,8 +688,12 @@ class Queue:
             at_front (bool, optional): Whether to enqueue the job at the front. Defaults to False.
             meta (Optional[Dict], optional): Metadata to attach to the job. Defaults to None.
             retry (Optional[Retry], optional): Retry object. Defaults to None.
-            on_success (Optional[Callable[..., Any]], optional): Callable for on success. Defaults to None.
-            on_failure (Optional[Callable[..., Any]], optional): Callable for on failure. Defaults to None.
+            on_success (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on success. Defaults to
+                None. Callable is deprecated.
+            on_failure (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on failure. Defaults to
+                None. Callable is deprecated.
+            on_stopped (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on stopped. Defaults to
+                None. Callable is deprecated.
             pipeline (Optional[Pipeline], optional): The Redis Pipeline. Defaults to None.
 
         Returns:
@@ -703,6 +716,7 @@ class Queue:
             retry=retry,
             on_success=on_success,
             on_failure=on_failure,
+            on_stopped=on_stopped,
         )
         return self.enqueue_job(job, pipeline=pipeline, at_front=at_front)
 
@@ -721,8 +735,9 @@ class Queue:
         at_front: bool = False,
         meta: Optional[Dict] = None,
         retry: Optional['Retry'] = None,
-        on_success: Optional[Callable] = None,
-        on_failure: Optional[Callable] = None,
+        on_success: Optional[Union[Callback, Callable]] = None,
+        on_failure: Optional[Union[Callback, Callable]] = None,
+        on_stopped: Optional[Union[Callback, Callable]] = None,
     ) -> EnqueueData:
         """Need this till support dropped for python_version < 3.7, where defaults can be specified for named tuples
         And can keep this logic within EnqueueData
@@ -741,8 +756,12 @@ class Queue:
             at_front (bool, optional): Whether to enqueue the job at the front. Defaults to False.
             meta (Optional[Dict], optional): Metadata to attach to the job. Defaults to None.
             retry (Optional[Retry], optional): Retry object. Defaults to None.
-            on_success (Optional[Callable[..., Any]], optional): Callable for on success. Defaults to None.
-            on_failure (Optional[Callable[..., Any]], optional): Callable for on failure. Defaults to None.
+            on_success (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on success. Defaults to
+                None. Callable is deprecated.
+            on_failure (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on failure. Defaults to
+                None. Callable is deprecated.
+            on_stopped (Optional[Union[Callback, Callable[..., Any]]], optional): Callback for on stopped. Defaults to
+                None. Callable is deprecated.
 
         Returns:
             EnqueueData: The EnqueueData
@@ -763,6 +782,7 @@ class Queue:
             retry,
             on_success,
             on_failure,
+            on_stopped,
         )
 
     def enqueue_many(self, job_datas: List['EnqueueData'], pipeline: Optional['Pipeline'] = None) -> List[Job]:
@@ -889,6 +909,7 @@ class Queue:
         retry = kwargs.pop('retry', None)
         on_success = kwargs.pop('on_success', None)
         on_failure = kwargs.pop('on_failure', None)
+        on_stopped = kwargs.pop('on_stopped', None)
         pipeline = kwargs.pop('pipeline', None)
 
         if 'args' in kwargs or 'kwargs' in kwargs:
@@ -910,6 +931,7 @@ class Queue:
             retry,
             on_success,
             on_failure,
+            on_stopped,
             pipeline,
             args,
             kwargs,
@@ -941,6 +963,7 @@ class Queue:
             retry,
             on_success,
             on_failure,
+            on_stopped,
             pipeline,
             args,
             kwargs,
@@ -962,6 +985,7 @@ class Queue:
             retry=retry,
             on_success=on_success,
             on_failure=on_failure,
+            on_stopped=on_stopped,
             pipeline=pipeline,
         )
 
@@ -989,6 +1013,7 @@ class Queue:
             retry,
             on_success,
             on_failure,
+            on_stopped,
             pipeline,
             args,
             kwargs,
@@ -1009,6 +1034,7 @@ class Queue:
             retry=retry,
             on_success=on_success,
             on_failure=on_failure,
+            on_stopped=on_stopped,
         )
         if at_front:
             job.enqueue_at_front = True
@@ -1258,7 +1284,7 @@ class Queue:
         if timeout is not None:  # blocking variant
             if timeout == 0:
                 raise ValueError('RQ does not support indefinite timeouts. Please pick a timeout value > 0')
-            colored_queues = ''.join(map(str, [green(str(queue)) for queue in queue_keys]))
+            colored_queues = ', '.join(map(str, [green(str(queue)) for queue in queue_keys]))
             logger.debug(f"Starting BLPOP operation for queues {colored_queues} with timeout of {timeout}")
             result = connection.blpop(queue_keys, timeout)
             if result is None:
