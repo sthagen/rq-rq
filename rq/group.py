@@ -23,7 +23,7 @@ class Group:
         self.key = '{0}{1}'.format(self.REDIS_GROUP_NAME_PREFIX, self.name)
 
     def __repr__(self):
-        return "Group(id={})".format(self.name)
+        return 'Group(id={})'.format(self.name)
 
     def _add_jobs(self, jobs: List[Job], pipeline: Pipeline):
         """Add jobs to the group"""
@@ -89,7 +89,13 @@ class Group:
     def all(cls, connection: 'Redis') -> List['Group']:
         "Returns an iterable of all Groupes."
         group_keys = [as_text(key) for key in connection.smembers(cls.REDIS_GROUP_KEY)]
-        return [cls.fetch(key, connection=connection) for key in group_keys]
+        groups = []
+        for key in group_keys:
+            try:
+                groups.append(cls.fetch(key, connection=connection))
+            except NoSuchGroupError:
+                connection.srem(cls.REDIS_GROUP_KEY, key)
+        return groups
 
     @classmethod
     def get_key(cls, name: str) -> str:
