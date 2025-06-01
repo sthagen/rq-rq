@@ -3,7 +3,7 @@ import logging.config
 import os
 import sys
 import warnings
-from typing import TYPE_CHECKING, List, Type, cast
+from typing import TYPE_CHECKING, cast
 
 import click
 from redis.exceptions import ConnectionError
@@ -27,6 +27,7 @@ from rq.defaults import (
 from rq.job import Job
 from rq.serializers import DefaultSerializer
 from rq.suspension import is_suspended
+from rq.utils import import_job_class, import_worker_class
 from rq.worker_pool import WorkerPool
 
 if TYPE_CHECKING:
@@ -205,22 +206,22 @@ def worker_pool(
     """Starts a RQ worker pool"""
     settings = read_config_file(cli_config.config) if cli_config.config else {}
     # Worker specific default arguments
-    queue_names: List[str] = queues or settings.get('QUEUES', ['default'])
+    queue_names: list[str] = queues or settings.get('QUEUES', ['default'])
 
     setup_loghandlers_from_args(verbose, quiet, date_format, log_format)
 
     if serializer:
-        serializer_class = cast(Type['Serializer'], import_attribute(serializer))
+        serializer = cast('Serializer', import_attribute(serializer))
     else:
-        serializer_class = DefaultSerializer
+        serializer = DefaultSerializer
 
     if worker_class:
-        worker_class = import_attribute(worker_class)
+        worker_class = import_worker_class(worker_class)
     else:
         worker_class = Worker
 
     if job_class:
-        job_class = import_attribute(job_class)
+        job_class = import_job_class(job_class)
     else:
         job_class = Job
 
@@ -232,7 +233,7 @@ def worker_pool(
         queue_names,
         connection=cli_config.connection,
         num_workers=num_workers,
-        serializer=serializer_class,
+        serializer=serializer,
         worker_class=worker_class,
         job_class=job_class,
     )
