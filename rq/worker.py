@@ -178,12 +178,12 @@ class BaseWorker:
         self.connection = connection
         self.redis_server_version = None
 
-        self.job_class = (
-            import_job_class(job_class) if isinstance(job_class, str) else (job_class if job_class else Job)
-        )
-        self.queue_class = (
-            import_queue_class(queue_class) if isinstance(queue_class, str) else (queue_class if queue_class else Queue)
-        )
+        if job_class:
+            self.job_class = import_job_class(job_class) if isinstance(job_class, str) else job_class
+
+        if queue_class:
+            self.queue_class = import_queue_class(queue_class) if isinstance(queue_class, str) else queue_class
+
         self.version: str = VERSION
         self.python_version: str = sys.version
         self.serializer = resolve_serializer(serializer)
@@ -514,11 +514,6 @@ class BaseWorker:
     def pubsub_channel_name(self):
         """Returns the worker's Redis hash key."""
         return PUBSUB_CHANNEL_TEMPLATE % self.name
-
-    @property
-    def supports_redis_streams(self) -> bool:
-        """Only supported by Redis server >= 5.0 is required."""
-        return self.get_redis_server_version() >= (5, 0, 0)
 
     def request_stop(self, signum, frame):
         """Stops the current worker loop but waits for child processes to
