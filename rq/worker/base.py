@@ -1476,6 +1476,7 @@ class BaseWorker:
                 )
                 return True
             else:
+                job._status = JobStatus.FINISHED
                 job.execute_success_callback(self.death_penalty_class, return_value)
                 self.handle_job_success(job=job, queue=queue, started_job_registry=started_job_registry)
 
