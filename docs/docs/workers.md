@@ -182,11 +182,12 @@ print('Total working time: '+ worker.total_working_time)  # In seconds
 * `pid` - worker's process ID
 * `queues` - queues on which this worker is listening for jobs
 * `state` - possible states are `suspended`, `started`, `busy` and `idle`
-* `current_job` - the job it's currently executing (if any)
+* `get_current_executions()` - the executions the worker is currently running, cached after the first call; pass `refresh=True` to refetch from Redis
 * `last_heartbeat` - the last time this worker was seen
 * `birth_date` - time of worker's instantiation
 * `successful_job_count` - number of jobs finished successfully
 * `failed_job_count` - number of failed jobs processed
+* `current_execution_count` - number of executions the worker currently handling
 * `total_working_time` - amount of time spent executing jobs, in seconds
 
 If you only want to know the number of workers for monitoring purposes,
@@ -319,6 +320,10 @@ $ rq worker -c settings
 ```
 
 Alternatively, you can also pass in these options via environment variables.
+
+## Logging
+
+RQ logs to the `rq.worker`, `rq.job`, `rq.queue`, `rq.scheduler`, `rq.cron` and `rq.worker_pool` loggers. RQ only sets up its own log handlers when no handler is configured anywhere in the logger hierarchy, so if your application configures logging first, RQ leaves it untouched.
 
 ## Custom Worker Classes
 

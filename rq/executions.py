@@ -16,15 +16,17 @@ from .job import Job
 from .registry import BaseRegistry, StartedJobRegistry
 from .utils import as_text, current_timestamp, now, parse_composite_key
 
+WORKER_EXECUTIONS_KEY_TEMPLATE = 'rq:worker:{0}:executions'
 
-# TODO: add execution.worker
+
 class Execution:
     """Class to represent an execution of a job."""
 
-    def __init__(self, id: str, job_id: str, connection: Redis):
+    def __init__(self, id: str, job_id: str, connection: Redis, worker_name: str = ''):
         self.id = id
         self.job_id = job_id
         self.connection = connection
+        self.worker_name = worker_name
         right_now = now()
         self.created_at = right_now
         self.last_heartbeat = right_now
@@ -34,6 +36,9 @@ class Execution:
         if not isinstance(other, Execution):
             return False
         return self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
 
     @property
     def key(self) -> str:
@@ -50,6 +55,16 @@ class Execution:
     def composite_key(self):
         return f'{self.job_id}:{self.id}'
 
+    @property
+    def worker_executions_key(self) -> str:
+        """Redis key of the execution index of the worker running this execution."""
+        return WORKER_EXECUTIONS_KEY_TEMPLATE.format(self.worker_name)
+
+    @property
+    def working_time(self) -> float:
+        """Seconds elapsed since this execution was created."""
+        return (now() - self.created_at).total_seconds()
+
     @classmethod
     def fetch(cls, id: str, job_id: str, connection: Redis) -> Execution:
         """Fetch an execution from Redis."""
@@ -62,8 +77,13 @@ class Execution:
         data = self.connection.hgetall(self.key)
         if not data:
             raise ValueError(f'Execution {self.id} not found in Redis')
+        self.restore(data)
+
+    def restore(self, data: dict):
+        """Restore execution attributes from raw Redis hash data."""
         self.created_at = datetime.fromtimestamp(float(data[b'created_at']), tz=timezone.utc)
         self.last_heartbeat = datetime.fromtimestamp(float(data[b'last_heartbeat']), tz=timezone.utc)
+        self.worker_name = as_text(data.get(b'worker_name', b''))
 
     @classmethod
     def from_composite_key(cls, composite_key: str, connection: Redis) -> Execution:
@@ -72,13 +92,18 @@ class Execution:
         return cls(id=execution_id, job_id=job_id, connection=connection)
 
     @classmethod
-    def create(cls, job: Job, ttl: int, pipeline: Pipeline) -> Execution:
+    def create(cls, job: Job, ttl: int, pipeline: Pipeline, worker_name: str = '') -> Execution:
         """Save execution data to Redis."""
         id = uuid4().hex
-        execution = cls(id=id, job_id=job.id, connection=job.connection)
+        execution = cls(id=id, job_id=job.id, connection=job.connection, worker_name=worker_name)
+        execution._job = job
         execution.save(ttl=ttl, pipeline=pipeline)
         ExecutionRegistry(job_id=job.id, connection=pipeline).add(execution=execution, ttl=ttl, pipeline=pipeline)
         job.started_job_registry.add_execution(execution, pipeline=pipeline, ttl=ttl, xx=False)
+        if worker_name:
+            # Register in the worker's execution index; the worker's heartbeat keeps its TTL refreshed
+            pipeline.sadd(execution.worker_executions_key, execution.composite_key)
+            pipeline.expire(execution.worker_executions_key, ttl + 60)
         return execution
 
     def save(self, ttl: int, pipeline: Pipeline | None = None):
@@ -93,12 +118,15 @@ class Execution:
         pipeline.delete(self.key)
         job.started_job_registry.remove_execution(execution=self, pipeline=pipeline)
         ExecutionRegistry(job_id=self.job_id, connection=self.connection).remove(execution=self, pipeline=pipeline)
+        if self.worker_name:
+            pipeline.srem(self.worker_executions_key, self.composite_key)
 
     def serialize(self) -> dict:
         return {
             'id': self.id,
             'created_at': self.created_at.timestamp(),
             'last_heartbeat': self.last_heartbeat.timestamp(),
+            'worker_name': self.worker_name,
         }
 
     def heartbeat(self, started_job_registry: StartedJobRegistry, ttl: int, pipeline: Pipeline):
@@ -196,13 +224,14 @@ def prepare_execution(worker: BaseWorker, job: Job) -> Execution:
 
     with worker.connection.pipeline() as pipeline:
         heartbeat_ttl = worker.get_heartbeat_ttl(job)
-        worker.execution = Execution.create(job, heartbeat_ttl, pipeline=pipeline)
+        execution = Execution.create(job, heartbeat_ttl, pipeline=pipeline, worker_name=worker.name)
+        worker.executions[execution.id] = execution
         worker.set_state(WorkerStatus.BUSY, pipeline=pipeline)
         pipeline.execute()
-    return worker.execution
+    return execution
 
 
-def cleanup_execution(worker: BaseWorker, job: Job, pipeline: Pipeline) -> None:
+def cleanup_execution(worker: BaseWorker, job: Job, pipeline: Pipeline, execution: Execution | None = None) -> None:
     """Cleans up the execution of a job.
     It will remove the job execution record from the StartedJobRegistry and delete the Execution object.
 
@@ -210,9 +239,9 @@ def cleanup_execution(worker: BaseWorker, job: Job, pipeline: Pipeline) -> None:
         worker: The worker to clean up execution for
         job: The job whose execution is being cleaned up
         pipeline: Redis pipeline to use for the cleanup
+        execution: The execution to clean up
     """
     logger.debug('Cleaning up execution of job %s', job.id)
-    worker.set_current_job_id(None, pipeline=pipeline)
-    if worker.execution is not None:
-        worker.execution.delete(job=job, pipeline=pipeline)
-        worker.execution = None
+    if execution:
+        execution.delete(job=job, pipeline=pipeline)
+        worker.executions.pop(execution.id, None)

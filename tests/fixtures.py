@@ -77,6 +77,13 @@ def returns_retry():
     return Retry(max=1)
 
 
+def returns_retry_with_delay():
+    """Always returns a delayed Retry object (return-based retry)."""
+    from rq import Retry
+
+    return Retry(max=1, interval=30)
+
+
 def long_process():
     time.sleep(60)
     return
@@ -217,7 +224,7 @@ def run_dummy_heroku_worker(sandbox, _imminent_shutdown_delay, connection):
     class TestHerokuWorker(HerokuWorker):
         imminent_shutdown_delay = _imminent_shutdown_delay
 
-        def perform_job(self, job, queue):
+        def perform_job(self, job, queue, execution=None):
             create_file(os.path.join(sandbox, 'started'))
             # have to loop here rather than one sleep to avoid holding the GIL
             # and preventing signals being received

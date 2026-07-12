@@ -1,5 +1,9 @@
-### RQ 2.11.0 (unreleased)
+### RQ 3.0 (unreleased)
+* `Job.perform()` no longer removes the job key's TTL. Job key TTL changes are now handled by workers. Thanks @selwin!
 * Refactored how job dependencies are handled. Introduced `READY_TO_ENQUEUE` job status and ReadyJobRegistry. Thanks @selwin!
+* `get_current_job()` now uses `contextvars` instead of thread-locals; gevent-based custom workers need `greenlet` >= 0.4.17. Thanks @selwin!
+* `Worker.handle_job_success()` now requires an `execution` argument, a breaking change for subclasses that override or call this method. Thanks @selwin!
+* RQ now disables propagation on loggers it configures itself to prevent double logging when applications configure logging afterwards. Thanks @selwin!
 
 ### RQ 2.10.0 (2026-06-20)
 * Added [webhook notifications](https://python-rq.org/docs/#webhooks) to notify external end points when a job finishes or fails. Thanks @selwin!
