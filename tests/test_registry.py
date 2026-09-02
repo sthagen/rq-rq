@@ -865,6 +865,7 @@ class TestStartedJobRegistry(RQTestCase):
 
         failed_job_registry = FailedJobRegistry(connection=self.connection)
         job = self.queue.enqueue(say_hello)
+        job.set_status(JobStatus.STARTED)
 
         self.connection.zadd(self.registry.key, {f'{job.id}:execution_id': 100})
 
@@ -873,13 +874,13 @@ class TestStartedJobRegistry(RQTestCase):
         self.assertNotIn(job, failed_job_registry)
         self.assertIn(job, self.registry)
 
-        with mock.patch.object(Job, 'execute_failure_callback') as mocked:
+        with mock.patch('rq.registry.execute_failure_callback') as mocked:
             mock_handler = mock.MagicMock()
             mock_handler.return_value = False
             mock_handler_no_return = mock.MagicMock()
             mock_handler_no_return.return_value = None
             self.registry.cleanup(exception_handlers=[mock_handler_no_return, mock_handler])
-            mocked.assert_called_once_with(self.queue.death_penalty_class, AbandonedJobError, ANY, None)
+            mocked.assert_called_once_with(job, self.queue.death_penalty_class, AbandonedJobError, ANY, None)
             mock_handler.assert_called_once_with(job, AbandonedJobError, ANY, None)
             mock_handler_no_return.assert_called_once_with(job, AbandonedJobError, ANY, None)
         self.assertIn(job.id, failed_job_registry)
@@ -890,14 +891,29 @@ class TestStartedJobRegistry(RQTestCase):
         self.assertIsNotNone(latest_result)
         self.assertTrue(latest_result.exc_string)  # explanation is written to exc_info
 
+    def test_cleanup_skips_finished_jobs(self):
+        """Finished jobs leftover in StartedJobRegistry are dropped, not abandoned."""
+        failed_job_registry = FailedJobRegistry(connection=self.connection)
+        job = self.queue.enqueue(say_hello)
+        job.set_status(JobStatus.FINISHED)
+        self.connection.zadd(self.registry.key, {f'{job.id}:execution_id': 1})
+
+        self.registry.cleanup()
+
+        self.assertNotIn(job.id, failed_job_registry)
+        self.assertNotIn(job, self.registry)
+        job.refresh()
+        self.assertEqual(job.get_status(), JobStatus.FINISHED)
+
     def test_cleanup_continues_when_failure_callback_raises(self):
         """A raising failure callback must not stop the job from being moved to the
         FailedJobRegistry."""
         failed_job_registry = FailedJobRegistry(connection=self.connection)
         job = self.queue.enqueue(say_hello)
+        job.set_status(JobStatus.STARTED)
         self.connection.zadd(self.registry.key, {f'{job.id}:execution_id': 1})
 
-        with mock.patch.object(Job, 'execute_failure_callback', side_effect=Exception()):
+        with mock.patch('rq.registry.execute_failure_callback', side_effect=Exception()):
             self.registry.cleanup()
 
         self.assertIn(job.id, failed_job_registry)
@@ -921,10 +937,11 @@ class TestStartedJobRegistry(RQTestCase):
 
         self.connection.zadd(self.registry.key, {f'{parent_job.id}:execution': 2})
         queue.remove(parent_job.id)
+        parent_job.set_status(JobStatus.STARTED)
 
-        with mock.patch.object(Job, 'execute_failure_callback') as mocked:
+        with mock.patch('rq.registry.execute_failure_callback') as mocked:
             self.registry.cleanup()
-            mocked.assert_called_once_with(queue.death_penalty_class, AbandonedJobError, ANY, ANY)
+            mocked.assert_called_once_with(parent_job, queue.death_penalty_class, AbandonedJobError, ANY, ANY)
 
         # check that parent job was moved to FailedJobRegistry and has correct status
         self.assertIn(parent_job, failed_job_registry)
